@@ -207,4 +207,125 @@ class MaVIOCrawler
         
         return json_encode($searchResult['data'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
     }
+    
+    public function parseSearchResultsWithHeaders(string $html): array
+    {
+        $crawler = new DomCrawler($html);
+        $results = [];
+        $headers = ['醫事人員', '專科別', '執業縣市', '性別事件相關案件資訊'];
+        
+        $table = $crawler->filter('table');
+        if ($table->count() > 0) {
+            $rows = $table->filter('tbody tr');
+            $rows->each(function (DomCrawler $row) use (&$results) {
+                $columns = $row->filter('td');
+                if ($columns->count() > 0) {
+                    $rowData = [];
+                    $columnIndex = 0;
+                    $columns->each(function (DomCrawler $col) use (&$rowData, &$columnIndex) {
+                        if ($columnIndex == 3) {
+                            $link = $col->filter('a');
+                            if ($link->count() > 0) {
+                                $href = $link->attr('href');
+                                if ($href) {
+                                    $rowData[] = $href;
+                                } else {
+                                    $rowData[] = trim($col->text());
+                                }
+                            } else {
+                                $rowData[] = trim($col->text());
+                            }
+                        } else {
+                            $rowData[] = trim($col->text());
+                        }
+                        $columnIndex++;
+                    });
+                    $results[] = $rowData;
+                }
+            });
+        }
+        
+        return [
+            'headers' => $headers,
+            'rows' => $results,
+            'total_rows' => count($results)
+        ];
+    }
+    
+    public function exportToCSV(array $allData, string $filename): bool
+    {
+        try {
+            $fp = fopen($filename, 'w');
+            
+            fwrite($fp, "\xEF\xBB\xBF");
+            
+            if (!empty($allData['headers'])) {
+                fputcsv($fp, $allData['headers']);
+            }
+            
+            foreach ($allData['rows'] as $row) {
+                fputcsv($fp, $row);
+            }
+            
+            fclose($fp);
+            return true;
+        } catch (\Exception $e) {
+            return false;
+        }
+    }
+    
+    public function getAllCerRefIdOptions(): array
+    {
+        return [
+            'A' => '西醫',
+            'B' => '中醫',
+            'C' => '牙醫',
+            'D' => '藥局',
+            'E' => '護理機構',
+            'F' => '醫事檢驗',
+            'G' => '醫事放射',
+            'H' => '物理治療',
+            'I' => '職能治療',
+            'J' => '居家護理',
+            'D,E' => '藥局,護理機構'
+        ];
+    }
+    
+    public function crawlAllCerRefIds(callable $progressCallback = null): array
+    {
+        $allData = [
+            'headers' => [],
+            'rows' => []
+        ];
+        
+        $cerRefIds = $this->getAllCerRefIdOptions();
+        $totalOptions = count($cerRefIds);
+        $current = 0;
+        
+        foreach ($cerRefIds as $id => $name) {
+            $current++;
+            
+            if ($progressCallback) {
+                $progressCallback($current, $totalOptions, $id, $name);
+            }
+            
+            $result = $this->searchWithCustomParams($id);
+            
+            if ($result['success']) {
+                $parsedData = $this->parseSearchResultsWithHeaders($result['html']);
+                
+                if (empty($allData['headers']) && !empty($parsedData['headers'])) {
+                    $allData['headers'] = array_merge(['類別'], $parsedData['headers']);
+                }
+                
+                foreach ($parsedData['rows'] as $row) {
+                    $allData['rows'][] = array_merge([$name], $row);
+                }
+            }
+            
+            sleep(1);
+        }
+        
+        return $allData;
+    }
 }
